@@ -17,19 +17,21 @@ load_dotenv()
 API_KEY = os.getenv('ALPACA_API_KEY')
 API_SECRET = os.getenv('ALPACA_API_SECRET')
 BASE_URL = os.getenv('ALPACA_BASE_URL', 'https://paper-api.alpaca.markets/v2')
+DATA_URL = 'https://data.alpaca.markets/v2'
 DISCORD_TOKEN = os.getenv('DISCORD_BOT_TOKEN')
 DISCORD_CHANNEL = os.getenv('DISCORD_CHANNEL', 'pivots')
 STOCKS = os.getenv('STOCKS', 'AAPL,MSFT,TSLA').split(',')
 PIVOT_TIMEFRAME = os.getenv('PIVOT_TIMEFRAME', '1Day')
 CROSSING_THRESHOLD = float(os.getenv('CROSSING_THRESHOLD', '0.01'))
 ALERT_COOLDOWN = int(os.getenv('ALERT_COOLDOWN', '300'))
+REAL_TIME_DEBUG = os.getenv('REAL_TIME_DEBUG', 'true').lower() == 'true'
 
 if not API_KEY or not API_SECRET:
     raise ValueError("ALPACA_API_KEY and ALPACA_API_SECRET environment variables are required")
 if not DISCORD_TOKEN:
     raise ValueError("DISCORD_BOT_TOKEN environment variable is required")
 
-api = tradeapi.REST(API_KEY, API_SECRET, BASE_URL, api_version='v2')
+api = tradeapi.REST(API_KEY, API_SECRET, BASE_URL)
 
 pivot_levels = {stock: {} for stock in STOCKS}
 last_alert = {stock: {} for stock in STOCKS}
@@ -503,11 +505,14 @@ async def on_message(message):
     print(f"📨 Message processing completed for: '{message.content}'")
 
 async def send_discord_alert(symbol, pivot_level, price, timestamp):
+    print(f"📤 Attempting to send Discord alert for {symbol} {pivot_level} at ${price:.2f}")
+    
     if not discord_channel_obj:
-        print("⚠️  Discord channel not available")
+        print(f"❌ No Discord channel available for alert")
         return
     
     try:
+        print(f"📝 Creating Discord embed for {symbol} alert")
         embed = discord.Embed(
             title="📊 Pivot Level Alert",
             color=0x00ff00 if 'R' in pivot_level else 0xff0000,
@@ -525,112 +530,129 @@ async def send_discord_alert(symbol, pivot_level, price, timestamp):
         elif 'S' in pivot_level:
             embed.description = f"⬇️ Price is approaching support level {pivot_level}"
         
+        print(f"📤 Sending alert to Discord channel: #{discord_channel_obj.name}")
         await discord_channel_obj.send(embed=embed)
-        print(f"✅ Discord alert sent for {symbol}: {pivot_level} at ${price:.2f}")
+        print(f"✅ Discord alert sent successfully for {symbol} {pivot_level}")
         
     except Exception as e:
         print(f"❌ Error sending Discord alert for {symbol}: {e}")
+        import traceback
+        print(f"📋 Full traceback:\n{traceback.format_exc()}")
 
 def calculate_pivot_points(high, low, close):
+    """
+    Calculate traditional pivot points based on previous day's High, Low, Close.
+    
+    Traditional Pivot Point Rules:
+    - Pivot = (High + Low + Close) / 3
+    - R1 = Pivot + (Pivot - Low) = Above pivot at distance equal to pivot-to-low
+    - S1 = Pivot - (High - Pivot) = Below pivot at distance equal to high-to-pivot  
+    - R2 = Pivot + (High - Low) = Above pivot at distance equal to trading range
+    - S2 = Pivot - (High - Low) = Below pivot at distance equal to trading range
+    - R3 = R2 + (High - Low) = Above second resistance at distance equal to trading range
+    - S3 = S2 - (High - Low) = Below second support at distance equal to trading range
+    """
+    print(f"🧮 Starting pivot calculation with inputs:")
+    print(f"   High: ${high:.2f}")
+    print(f"   Low: ${low:.2f}")
+    print(f"   Close: ${close:.2f}")
+    
+    # Calculate pivot point
     pivot = (high + low + close) / 3
-    r1 = (2 * pivot) - low
-    s1 = (2 * pivot) - high
-    r2 = pivot + (high - low)
-    s2 = pivot - (high - low)
-    r3 = high + 2 * (pivot - low)
-    s3 = low - 2 * (high - pivot)
-    return {'Pivot': pivot, 'R1': r1, 'S1': s1, 'R2': r2, 'S2': s2, 'R3': r3, 'S3': s3}
+    print(f"🧮 Pivot = (${high:.2f} + ${low:.2f} + ${close:.2f}) / 3 = ${pivot:.2f}")
+    
+    # Calculate trading range
+    trading_range = high - low
+    print(f"🧮 Trading Range = ${high:.2f} - ${low:.2f} = ${trading_range:.2f}")
+    
+    # First level resistance and support
+    r1 = pivot + (pivot - low)  # Above pivot at distance equal to pivot-to-low
+    s1 = pivot - (high - pivot)  # Below pivot at distance equal to high-to-pivot
+    
+    print(f"🧮 R1 = ${pivot:.2f} + (${pivot:.2f} - ${low:.2f}) = ${pivot:.2f} + ${(pivot - low):.2f} = ${r1:.2f}")
+    print(f"🧮 S1 = ${pivot:.2f} - (${high:.2f} - ${pivot:.2f}) = ${pivot:.2f} - ${(high - pivot):.2f} = ${s1:.2f}")
+    
+    # Second level resistance and support  
+    r2 = pivot + trading_range  # Above pivot at distance equal to trading range
+    s2 = pivot - trading_range  # Below pivot at distance equal to trading range
+    
+    print(f"🧮 R2 = ${pivot:.2f} + ${trading_range:.2f} = ${r2:.2f}")
+    print(f"🧮 S2 = ${pivot:.2f} - ${trading_range:.2f} = ${s2:.2f}")
+    
+    # Third level resistance and support
+    r3 = r2 + trading_range  # Above second resistance at distance equal to trading range
+    s3 = s2 - trading_range  # Below second support at distance equal to trading range
+    
+    print(f"🧮 R3 = ${r2:.2f} + ${trading_range:.2f} = ${r3:.2f}")
+    print(f"🧮 S3 = ${s2:.2f} - ${trading_range:.2f} = ${s3:.2f}")
+    
+    result = {'Pivot': pivot, 'R1': r1, 'S1': s1, 'R2': r2, 'S2': s2, 'R3': r3, 'S3': s3}
+    print(f"🎯 Final pivot levels: {result}")
+    
+    return result
 
 async def fetch_pivot_data_for_stock(stock):
     try:
         print(f"📊 Fetching pivot data for {stock}...")
-        print(f"🔧 Using timeframe: {PIVOT_TIMEFRAME}")
-        print(f"🔧 Using base URL: {BASE_URL}")
         
-        print(f"📡 Making API call to Alpaca for {stock} (requesting 10 days)...")
-        bars_response = api.get_bars(stock, PIVOT_TIMEFRAME, limit=10)
-        print(f"📡 API response received: {type(bars_response)}")
+        # Get the last trading day (skip weekends)
+        from datetime import datetime, timedelta
+        def get_last_trading_day():
+            today = datetime.utcnow().date()
+            offset = 1
+            while True:
+                candidate = today - timedelta(days=offset)
+                if candidate.weekday() < 5:  # Mon-Fri are 0-4
+                    return candidate
+                offset += 1
         
-        if bars_response is None:
-            print(f"❌ API returned None for {stock}")
-            return None
-            
-        print(f"📊 Converting to DataFrame...")
-        bars_df = bars_response.df
-        print(f"📊 DataFrame shape: {bars_df.shape}")
-        print(f"📊 DataFrame columns: {list(bars_df.columns)}")
-        print(f"📊 DataFrame head:\n{bars_df.head()}")
+        last_trading_day = get_last_trading_day()
+        print(f"📅 Fetching data for {stock} on {last_trading_day}...")
         
-        if len(bars_df) == 0:
-            print(f"❌ No data available for {stock}")
-            print(f"🔍 Trying alternative data sources...")
-            
-            try:
-                print(f"📡 Trying 1-minute bars for {stock}...")
-                bars_1min = api.get_bars(stock, '1Min', limit=100).df
-                if len(bars_1min) > 0:
-                    print(f"✅ Found {len(bars_1min)} 1-minute bars for {stock}")
-                    latest_bar = bars_1min.iloc[-1]
-                    current_high = latest_bar['high']
-                    current_low = latest_bar['low']
-                    current_close = latest_bar['close']
-                    
-                    print(f"📈 Using latest 1-minute data for {stock}:")
-                    print(f"   High: ${current_high:.2f}")
-                    print(f"   Low: ${current_low:.2f}")
-                    print(f"   Close: ${current_close:.2f}")
-                    
-                    pivot_data = calculate_pivot_points(current_high, current_low, current_close)
-                    pivot_levels[stock] = pivot_data
-                    
-                    print(f"⚠️ Calculated pivot levels using 1-minute data: {pivot_data}")
-                    return pivot_data
-                else:
-                    print(f"❌ No 1-minute data available for {stock}")
-            except Exception as e:
-                print(f"❌ Error fetching 1-minute data for {stock}: {e}")
-            
-            print(f"❌ No data sources available for {stock}")
+        # Use the working market data API approach
+        headers = {
+            'APCA-API-KEY-ID': API_KEY,
+            'APCA-API-SECRET-KEY': API_SECRET
+        }
+        
+        params = {
+            'timeframe': '1Day',
+            'start': last_trading_day.strftime('%Y-%m-%d'),
+            'end': last_trading_day.strftime('%Y-%m-%d'),
+            'limit': 1
+        }
+        
+        url = f"{DATA_URL}/stocks/{stock}/bars"
+        
+        response = requests.get(url, headers=headers, params=params)
+        print(f"📡 API response status: {response.status_code}")
+        
+        if response.status_code != 200:
+            print(f"❌ API error: {response.status_code} {response.text}")
             return None
         
-        if len(bars_df) < 2:
-            print(f"❌ Insufficient data for {stock}. Got {len(bars_df)} rows, need at least 2")
-            print(f"📊 Available data:\n{bars_df}")
-            
-            if len(bars_df) == 1:
-                print(f"⚠️ Only 1 day of data available, using current day as pivot reference")
-                current_high = bars_df['high'].iloc[0]
-                current_low = bars_df['low'].iloc[0]
-                current_close = bars_df['close'].iloc[0]
-                
-                print(f"📈 Using current day data for {stock}:")
-                print(f"   High: ${current_high:.2f}")
-                print(f"   Low: ${current_low:.2f}")
-                print(f"   Close: ${current_close:.2f}")
-                
-                pivot_data = calculate_pivot_points(current_high, current_low, current_close)
-                pivot_levels[stock] = pivot_data
-                
-                print(f"⚠️ Calculated pivot levels using current day data: {pivot_data}")
-                return pivot_data
-            
+        data = response.json()
+        bars = data.get('bars', [])
+        
+        if not bars:
+            print(f"❌ No data returned for {stock} on {last_trading_day}")
             return None
-            
-        print(f"✅ Got sufficient data for {stock}")
         
-        prev_high = bars_df['high'].iloc[-2]
-        prev_low = bars_df['low'].iloc[-2]
-        prev_close = bars_df['close'].iloc[-2]
+        bar = bars[0]
+        high = bar['h']
+        low = bar['l']
+        close = bar['c']
         
-        print(f"📈 Data extracted for {stock} (previous trading day):")
-        print(f"   High: ${prev_high:.2f}")
-        print(f"   Low: ${prev_low:.2f}")
-        print(f"   Close: ${prev_close:.2f}")
+        print(f"📈 Data extracted for {stock} (last trading day - {last_trading_day}):")
+        print(f"   High: ${high:.2f}")
+        print(f"   Low: ${low:.2f}")
+        print(f"   Close: ${close:.2f}")
         
-        pivot_data = calculate_pivot_points(prev_high, prev_low, prev_close)
+        pivot_data = calculate_pivot_points(high, low, close)
         pivot_levels[stock] = pivot_data
         
         print(f"✅ Updated pivot levels for {stock}: {pivot_data}")
+        print(f"📊 Total stocks with pivot data: {len([s for s in STOCKS if pivot_levels.get(s)])}/{len(STOCKS)}")
         return pivot_data
         
     except Exception as e:
@@ -643,17 +665,64 @@ async def fetch_pivot_data_for_stock(stock):
 def update_pivot_levels():
     for stock in STOCKS:
         try:
-            bars = api.get_bars(stock, PIVOT_TIMEFRAME, limit=2).df
-            if len(bars) < 2:
-                print(f"Insufficient data for {stock}")
+            print(f"🔄 Updating pivot levels for {stock}...")
+            
+            # Get the last trading day (skip weekends)
+            from datetime import datetime, timedelta
+            def get_last_trading_day():
+                today = datetime.utcnow().date()
+                offset = 1
+                while True:
+                    candidate = today - timedelta(days=offset)
+                    if candidate.weekday() < 5:  # Mon-Fri are 0-4
+                        return candidate
+                    offset += 1
+            
+            last_trading_day = get_last_trading_day()
+            print(f"📅 Fetching data for {stock} on {last_trading_day}...")
+            
+            # Use the working market data API approach
+            headers = {
+                'APCA-API-KEY-ID': API_KEY,
+                'APCA-API-SECRET-KEY': API_SECRET
+            }
+            
+            params = {
+                'timeframe': '1Day',
+                'start': last_trading_day.strftime('%Y-%m-%d'),
+                'end': last_trading_day.strftime('%Y-%m-%d'),
+                'limit': 1
+            }
+            
+            url = f"{DATA_URL}/stocks/{stock}/bars"
+            
+            response = requests.get(url, headers=headers, params=params)
+            
+            if response.status_code != 200:
+                print(f"❌ API error for {stock}: {response.status_code}")
                 continue
-            prev_high = bars['high'][-2]
-            prev_low = bars['low'][-2]
-            prev_close = bars['close'][-2]
-            pivot_levels[stock] = calculate_pivot_points(prev_high, prev_low, prev_close)
-            print(f"Updated pivot levels for {stock}: {pivot_levels[stock]}")
+            
+            data = response.json()
+            bars = data.get('bars', [])
+            
+            if not bars:
+                print(f"❌ No data returned for {stock} on {last_trading_day}")
+                continue
+            
+            bar = bars[0]
+            high = bar['h']
+            low = bar['l']
+            close = bar['c']
+            
+            print(f"📈 Using data for {stock} from {last_trading_day}:")
+            print(f"   High: ${high:.2f}")
+            print(f"   Low: ${low:.2f}")
+            print(f"   Close: ${close:.2f}")
+            
+            pivot_levels[stock] = calculate_pivot_points(high, low, close)
+            print(f"✅ Updated pivot levels for {stock} (last trading day): {pivot_levels[stock]}")
         except Exception as e:
-            print(f"Error updating pivot levels for {stock}: {e}")
+            print(f"❌ Error updating pivot levels for {stock}: {e}")
     
     if discord_channel_obj:
         asyncio.create_task(send_daily_pivots_update())
@@ -684,50 +753,218 @@ async def send_daily_pivots_update():
 
 def on_websocket_message(ws, message):
     try:
+        if REAL_TIME_DEBUG:
+            print(f"📨 WebSocket message received: {message[:200]}...")
         data = json.loads(message)
-        for msg in data:
-            if msg.get('T') == 'q':
-                stock = msg['S']
-                if stock in STOCKS:
-                    price = (msg.get('ap', 0) + msg.get('bp', 0)) / 2
-                    if price > 0:
-                        check_pivot_crossing(stock, price)
-            elif msg.get('T') == 't':
-                stock = msg['S']
-                if stock in STOCKS:
-                    price = msg.get('p', 0)
-                    if price > 0:
-                        check_pivot_crossing(stock, price)
+        
+        if isinstance(data, list):
+            if REAL_TIME_DEBUG:
+                print(f"📋 Processing {len(data)} messages from WebSocket")
+            for i, msg in enumerate(data):
+                if REAL_TIME_DEBUG:
+                    print(f"📨 Processing message {i+1}/{len(data)}")
+                process_websocket_message(msg)
+        else:
+            if REAL_TIME_DEBUG:
+                print(f"📨 Processing single WebSocket message")
+            process_websocket_message(data)
+            
+    except json.JSONDecodeError as e:
+        print(f"❌ Failed to parse WebSocket message: {e}")
+        print(f"📨 Raw message: {message[:200]}...")
     except Exception as e:
-        print(f"Error processing WebSocket message: {e}")
+        print(f"❌ Error processing WebSocket message: {e}")
+        import traceback
+        print(f"📋 Full traceback:\n{traceback.format_exc()}")
+
+def process_websocket_message(msg):
+    try:
+        msg_type = msg.get('T')
+        stock = msg.get('S')
+        
+        if REAL_TIME_DEBUG:
+            print(f"🔍 Processing message: Type={msg_type}, Stock={stock}")
+        
+        if not stock or stock not in STOCKS:
+            if REAL_TIME_DEBUG:
+                print(f"⏭️ Skipping {stock} - not in monitored stocks: {STOCKS}")
+            return
+            
+        price = 0
+        
+        if msg_type == 'q':  # Quote
+            ask_price = msg.get('ap', 0)
+            bid_price = msg.get('bp', 0)
+            if REAL_TIME_DEBUG:
+                print(f"💬 Quote for {stock}: Ask=${ask_price}, Bid=${bid_price}")
+            if ask_price > 0 and bid_price > 0:
+                price = (ask_price + bid_price) / 2
+                if REAL_TIME_DEBUG:
+                    print(f"💰 Calculated quote price for {stock}: ${price:.2f}")
+            else:
+                if REAL_TIME_DEBUG:
+                    print(f"⚠️ Invalid quote prices for {stock}: Ask=${ask_price}, Bid=${bid_price}")
+        elif msg_type == 't':  # Trade
+            price = msg.get('p', 0)
+            if REAL_TIME_DEBUG:
+                print(f"💱 Trade for {stock}: ${price:.2f}")
+        else:
+            if REAL_TIME_DEBUG:
+                print(f"❓ Unknown message type: {msg_type}")
+            return
+        
+        if price > 0:
+            if REAL_TIME_DEBUG:
+                print(f"🎯 Calling check_pivot_crossing for {stock} at ${price:.2f}")
+            check_pivot_crossing(stock, price)
+        else:
+            if REAL_TIME_DEBUG:
+                print(f"⚠️ Invalid price for {stock}: ${price}")
+            
+    except Exception as e:
+        print(f"❌ Error processing individual message: {e}")
+        import traceback
+        print(f"📋 Full traceback:\n{traceback.format_exc()}")
 
 def check_pivot_crossing(stock, price):
+    if REAL_TIME_DEBUG:
+        print(f"🔍 Checking pivot crossing for {stock} at ${price:.2f}")
+    
     if stock not in pivot_levels or not pivot_levels[stock]:
+        if REAL_TIME_DEBUG:
+            print(f"⏳ No pivot data available for {stock}, fetching on-demand...")
+            print(f"📊 Available pivot data: {list(pivot_levels.keys())}")
+        
+        # Fetch pivot data lazily
+        try:
+            if REAL_TIME_DEBUG:
+                print(f"📈 Fetching pivot data for {stock}...")
+            pivot_data = asyncio.run(fetch_pivot_data_for_stock(stock))
+            if pivot_data:
+                if REAL_TIME_DEBUG:
+                    print(f"✅ Successfully loaded pivot data for {stock}: {pivot_data}")
+                # Now check the crossing again with the loaded data
+                check_pivot_crossing(stock, price)
+            else:
+                if REAL_TIME_DEBUG:
+                    print(f"❌ Failed to load pivot data for {stock}")
+        except Exception as e:
+            if REAL_TIME_DEBUG:
+                print(f"❌ Error fetching pivot data for {stock}: {e}")
         return
     
+    if REAL_TIME_DEBUG:
+        print(f"📊 Pivot levels for {stock}: {pivot_levels[stock]}")
+    
     current_time = datetime.utcnow().isoformat() + 'Z'
+    
+    # Find the closest pivot level that the price is approaching
+    closest_level = None
+    closest_distance = float('inf')
+    approaching_direction = None
+    
     for level_name, level_value in pivot_levels[stock].items():
-        if abs(price - level_value) < CROSSING_THRESHOLD:
-            last_alert_time = last_alert[stock].get(level_name, 0)
-            if time.time() - last_alert_time < ALERT_COOLDOWN:
-                continue
+        distance = abs(price - level_value)
+        
+        if REAL_TIME_DEBUG:
+            print(f"📏 {stock} ${price:.2f} vs {level_name} ${level_value:.2f} = distance ${distance:.2f} (threshold: ${CROSSING_THRESHOLD})")
+        
+        # Only consider levels within threshold
+        if distance < CROSSING_THRESHOLD:
+            # Determine if price is approaching from above or below
+            if price > level_value:
+                direction = "down"  # Price is above level, approaching from above
+            else:
+                direction = "up"    # Price is below level, approaching from below
             
-            if discord_client.is_ready():
-                asyncio.create_task(send_discord_alert(stock, level_name, price, current_time))
-                last_alert[stock][level_name] = time.time()
+            if REAL_TIME_DEBUG:
+                print(f"🎯 {stock} at ${price:.2f} is approaching {level_name} ${level_value:.2f} from {direction}")
+            
+            # Keep track of the closest level within threshold
+            if distance < closest_distance:
+                closest_distance = distance
+                closest_level = level_name
+                approaching_direction = direction
+    
+    # If we found a level to alert on
+    if closest_level:
+        level_value = pivot_levels[stock][closest_level]
+        
+        # Create a unique key for this specific crossing to prevent duplicates
+        crossing_key = f"{stock}_{closest_level}_{price:.2f}"
+        
+        # Check if we've already processed this exact crossing recently
+        current_time_seconds = time.time()
+        if crossing_key in last_alert and current_time_seconds - last_alert[crossing_key] < ALERT_COOLDOWN:
+            if REAL_TIME_DEBUG:
+                print(f"⏳ Duplicate crossing detected for {crossing_key}, skipping alert")
+            return
+        
+        print(f"🎯 PIVOT CROSSING DETECTED! {stock} at ${price:.2f} approaching {closest_level} ${level_value:.2f} from {approaching_direction}")
+        
+        print(f"📤 Sending Discord alert for {stock} {closest_level} at ${price:.2f}")
+        
+        if discord_client.is_ready():
+            # Schedule the alert in the main event loop
+            loop = discord_client.loop
+            if loop and loop.is_running():
+                loop.call_soon_threadsafe(
+                    lambda level=closest_level, p=price, t=current_time: asyncio.create_task(send_discord_alert(stock, level, p, t))
+                )
+                # Mark this crossing as processed
+                last_alert[crossing_key] = current_time_seconds
+                print(f"✅ Alert scheduled and cooldown set for {crossing_key}")
+            else:
+                print(f"❌ Discord event loop not available, cannot send alert")
+        else:
+            print(f"❌ Discord client not ready, cannot send alert")
+    else:
+        if REAL_TIME_DEBUG:
+            print(f"➡️ No pivot level crossings detected for {stock} at ${price:.2f}")
+
+websocket_reconnect_count = 0
+MAX_RECONNECT_ATTEMPTS = 5
+RECONNECT_DELAY = 30
 
 def on_error(ws, error):
     print(f"WebSocket error: {error}")
+    global websocket_reconnect_count
+    websocket_reconnect_count += 1
 
 def on_close(ws, close_status_code, close_msg):
-    print("WebSocket closed. Reconnecting...")
-    start_websocket()
+    global websocket_reconnect_count
+    if REAL_TIME_DEBUG:
+        print(f"WebSocket closed (code: {close_status_code}, msg: {close_msg})")
+    
+    if websocket_reconnect_count < MAX_RECONNECT_ATTEMPTS:
+        if REAL_TIME_DEBUG:
+            print(f"🔄 Reconnecting... (attempt {websocket_reconnect_count + 1}/{MAX_RECONNECT_ATTEMPTS})")
+        time.sleep(RECONNECT_DELAY)
+        start_websocket()
+    else:
+        print(f"❌ Max reconnection attempts reached ({MAX_RECONNECT_ATTEMPTS}). Stopping WebSocket reconnection.")
+        print("💡 You can restart the bot to re-enable real-time alerts.")
 
 def on_open(ws):
-    print("WebSocket opened")
-    ws.send(json.dumps({"action": "auth", "key": API_KEY, "secret": API_SECRET}))
-    for stock in STOCKS:
-        ws.send(json.dumps({"action": "subscribe", "quotes": [stock]}))
+    global websocket_reconnect_count
+    websocket_reconnect_count = 0
+    if REAL_TIME_DEBUG:
+        print("✅ WebSocket opened successfully")
+    
+    try:
+        auth_message = {"action": "auth", "key": API_KEY, "secret": API_SECRET}
+        ws.send(json.dumps(auth_message))
+        if REAL_TIME_DEBUG:
+            print("🔐 WebSocket authentication sent")
+        
+        for stock in STOCKS:
+            subscribe_message = {"action": "subscribe", "quotes": [stock]}
+            ws.send(json.dumps(subscribe_message))
+        if REAL_TIME_DEBUG:
+            print(f"📡 Subscribed to quotes for {len(STOCKS)} stocks")
+        
+    except Exception as e:
+        print(f"❌ Error during WebSocket setup: {e}")
 
 def start_websocket():
     """Start WebSocket for real-time quotes"""
@@ -741,7 +978,8 @@ def start_websocket():
         ws_thread = threading.Thread(target=ws.run_forever)
         ws_thread.daemon = True
         ws_thread.start()
-        print("✅ WebSocket connection started for real-time data")
+        if REAL_TIME_DEBUG:
+            print("✅ WebSocket connection started for real-time data")
     except Exception as e:
         print(f"❌ Error starting WebSocket: {e}")
 
@@ -757,8 +995,15 @@ def run_trading_bot():
     print("📊 Pivot levels will be loaded on-demand when requested")
     
     # Start WebSocket for real-time data
-    print("🔗 Starting real-time data connection...")
+    if REAL_TIME_DEBUG:
+        print("🔗 Starting real-time data connection...")
     start_websocket()
+    
+    # Start polling as backup if WebSocket fails
+    if REAL_TIME_DEBUG:
+        print("🔄 Starting polling backup system...")
+    polling_thread = threading.Thread(target=run_polling_backup, daemon=True)
+    polling_thread.start()
     
     # Keep script running
     print("✅ Trading bot is now monitoring pivot levels!")
@@ -767,6 +1012,58 @@ def run_trading_bot():
             time.sleep(1)
     except KeyboardInterrupt:
         print("🛑 Shutting down trading bot...")
+
+def run_polling_backup():
+    """Poll for price updates as backup to WebSocket"""
+    if REAL_TIME_DEBUG:
+        print("📡 Polling backup system started")
+    poll_count = 0
+    while True:
+        try:
+            time.sleep(60)  # Poll every minute
+            poll_count += 1
+            if REAL_TIME_DEBUG:
+                print(f"📡 Polling backup cycle #{poll_count}")
+            
+            # Only poll if we have pivot data loaded
+            if not any(pivot_levels.values()):
+                if REAL_TIME_DEBUG:
+                    print(f"⏭️ Skipping poll cycle #{poll_count} - no pivot data loaded")
+                    print(f"📊 Available pivot data: {list(pivot_levels.keys())}")
+                continue
+                
+            stocks_with_pivots = [s for s in STOCKS if pivot_levels.get(s)]
+            if REAL_TIME_DEBUG:
+                print(f"📊 Polling {len(stocks_with_pivots)} stocks with pivot data: {stocks_with_pivots}")
+                
+            for stock in stocks_with_pivots:
+                try:
+                    if REAL_TIME_DEBUG:
+                        print(f"📡 Polling {stock}...")
+                    # Get latest trade
+                    trades = api.get_trades(stock, limit=1)
+                    if trades and len(trades) > 0:
+                        latest_trade = trades[0]
+                        price = latest_trade.price
+                        if REAL_TIME_DEBUG:
+                            print(f"💰 Polled {stock} price: ${price:.2f}")
+                        if price > 0:
+                            check_pivot_crossing(stock, price)
+                        else:
+                            if REAL_TIME_DEBUG:
+                                print(f"⚠️ Invalid price for {stock}: ${price}")
+                    else:
+                        if REAL_TIME_DEBUG:
+                            print(f"❌ No trades found for {stock}")
+                except Exception as e:
+                    if REAL_TIME_DEBUG:
+                        print(f"❌ Error polling {stock}: {e}")
+                    
+        except Exception as e:
+            print(f"❌ Error in polling backup: {e}")
+            import traceback
+            print(f"📋 Full traceback:\n{traceback.format_exc()}")
+            time.sleep(60)
 
 async def test_alpaca_connection():
     try:
