@@ -891,7 +891,8 @@ def check_pivot_crossing(stock, price):
         level_value = pivot_levels[stock][closest_level]
         
         # Create a unique key for this specific crossing to prevent duplicates
-        crossing_key = f"{stock}_{closest_level}_{price:.2f}"
+        # Round price to 1 decimal place to prevent spam from tiny price fluctuations
+        crossing_key = f"{stock}_{closest_level}_{price:.1f}"
         
         # Check if we've already processed this exact crossing recently
         current_time_seconds = time.time()
