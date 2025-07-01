@@ -561,6 +561,38 @@ async def fetch_pivot_data_for_stock(stock):
         print(f"📊 DataFrame columns: {list(bars_df.columns)}")
         print(f"📊 DataFrame head:\n{bars_df.head()}")
         
+        if len(bars_df) == 0:
+            print(f"❌ No data available for {stock}")
+            print(f"🔍 Trying alternative data sources...")
+            
+            try:
+                print(f"📡 Trying 1-minute bars for {stock}...")
+                bars_1min = api.get_bars(stock, '1Min', limit=100).df
+                if len(bars_1min) > 0:
+                    print(f"✅ Found {len(bars_1min)} 1-minute bars for {stock}")
+                    latest_bar = bars_1min.iloc[-1]
+                    current_high = latest_bar['high']
+                    current_low = latest_bar['low']
+                    current_close = latest_bar['close']
+                    
+                    print(f"📈 Using latest 1-minute data for {stock}:")
+                    print(f"   High: ${current_high:.2f}")
+                    print(f"   Low: ${current_low:.2f}")
+                    print(f"   Close: ${current_close:.2f}")
+                    
+                    pivot_data = calculate_pivot_points(current_high, current_low, current_close)
+                    pivot_levels[stock] = pivot_data
+                    
+                    print(f"⚠️ Calculated pivot levels using 1-minute data: {pivot_data}")
+                    return pivot_data
+                else:
+                    print(f"❌ No 1-minute data available for {stock}")
+            except Exception as e:
+                print(f"❌ Error fetching 1-minute data for {stock}: {e}")
+            
+            print(f"❌ No data sources available for {stock}")
+            return None
+        
         if len(bars_df) < 2:
             print(f"❌ Insufficient data for {stock}. Got {len(bars_df)} rows, need at least 2")
             print(f"📊 Available data:\n{bars_df}")
@@ -736,9 +768,47 @@ def run_trading_bot():
     except KeyboardInterrupt:
         print("🛑 Shutting down trading bot...")
 
+async def test_alpaca_connection():
+    try:
+        account = api.get_account()
+        print(f"✅ Alpaca connection successful")
+        print(f"📊 Account status: {account.status}")
+        print(f"💰 Buying power: ${account.buying_power}")
+        
+        print(f"🔍 Testing data availability for TSLA...")
+        try:
+            bars_1day = api.get_bars('TSLA', '1Day', limit=5).df
+            print(f"📊 1Day bars for TSLA: {len(bars_1day)} rows")
+            if len(bars_1day) > 0:
+                print(f"📈 Latest TSLA data: {bars_1day.iloc[-1]}")
+        except Exception as e:
+            print(f"❌ Error fetching 1Day TSLA data: {e}")
+            
+        try:
+            bars_1min = api.get_bars('TSLA', '1Min', limit=10).df
+            print(f"📊 1Min bars for TSLA: {len(bars_1min)} rows")
+            if len(bars_1min) > 0:
+                print(f"📈 Latest TSLA 1min data: {bars_1min.iloc[-1]}")
+        except Exception as e:
+            print(f"❌ Error fetching 1Min TSLA data: {e}")
+            
+        return True
+    except Exception as e:
+        print(f"❌ Alpaca connection failed: {e}")
+        return False
+
 async def main():
     """Main function to run both Discord bot and trading functionality"""
     print("🚀 Starting Market Structure Bot...")
+    print(f"📊 Monitoring stocks: {STOCKS}")
+    print(f"🎯 Pivot timeframe: {PIVOT_TIMEFRAME}")
+    print(f"💰 Alert threshold: ${CROSSING_THRESHOLD}")
+    print(f"⏰ Alert cooldown: {ALERT_COOLDOWN} seconds")
+    
+    try:
+        await test_alpaca_connection()
+    except Exception as e:
+        print(f"❌ Failed to test Alpaca connection: {e}")
     
     # Create tasks for Discord bot
     discord_task = asyncio.create_task(run_discord_bot())
